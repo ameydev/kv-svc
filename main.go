@@ -87,7 +87,6 @@ func search(w http.ResponseWriter, r *http.Request) {
 				keyFound = true
 			}
 		}
-		w.WriteHeader(http.StatusOK)
 
 	} else if strings.HasPrefix(RawQuery, "suffix=") {
 		keys, ok := r.URL.Query()["suffix"]
@@ -106,7 +105,6 @@ func search(w http.ResponseWriter, r *http.Request) {
 				keyFound = true
 			}
 		}
-		w.WriteHeader(http.StatusOK)
 
 	} else {
 		w.WriteHeader(http.StatusBadRequest)
@@ -114,7 +112,9 @@ func search(w http.ResponseWriter, r *http.Request) {
 		log.Println("Invalid search parameters.")
 		return
 	}
-	if !keyFound {
+	if keyFound {
+		w.WriteHeader(http.StatusOK)
+	} else {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("404 - No data found!"))
 	}
