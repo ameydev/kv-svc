@@ -167,7 +167,7 @@ func search(w http.ResponseWriter, r *http.Request) {
 func handleRequests() {
 	myRouter := mux.NewRouter().StrictSlash(true)
 	myRouter.HandleFunc("/search", search)
-	myRouter.HandleFunc("/getall", getall)
+	// myRouter.HandleFunc("/getall", getall)
 	myRouter.HandleFunc("/set", createNewEntity).Methods("POST")
 	myRouter.HandleFunc("/get/{key}", returnSingleEntityValue)
 	myRouter.Use(prometheusMiddleware)
