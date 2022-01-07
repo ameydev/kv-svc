@@ -22,7 +22,8 @@ type Entity struct {
 	Value string `json:"Value"`
 }
 
-var Entities []Entity
+var Entities = make(map[string]string)
+
 var (
 	keyConter = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "entity_counter",
@@ -68,14 +69,9 @@ func getall(w http.ResponseWriter, r *http.Request) {
 func returnSingleEntityValue(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	key := vars["key"]
-	var keyFound bool
-	for _, entity := range Entities {
-		if entity.Key == key {
-			keyFound = true
-			json.NewEncoder(w).Encode(entity.Value)
-		}
-	}
-	if keyFound {
+
+	if value, ok := Entities[key]; ok {
+		json.NewEncoder(w).Encode(value)
 		w.WriteHeader(http.StatusOK)
 		getCounter.WithLabelValues("200").Inc()
 	} else {
@@ -87,9 +83,6 @@ func returnSingleEntityValue(w http.ResponseWriter, r *http.Request) {
 }
 
 func createNewEntity(w http.ResponseWriter, r *http.Request) {
-	// get the body of our POST request
-	// unmarshal this into a new Entity struct
-	// append this to our Entities array.
 	reqBody, _ := ioutil.ReadAll(r.Body)
 	var entity Entity
 	json.Unmarshal(reqBody, &entity)
@@ -99,7 +92,7 @@ func createNewEntity(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("400 - Bad request!"))
 		postCounter.WithLabelValues("400").Inc()
 	} else {
-		Entities = append(Entities, entity)
+		Entities[entity.Key] = entity.Value
 		json.NewEncoder(w).Encode(entity)
 		w.WriteHeader(http.StatusAccepted)
 		keyConter.Inc()
@@ -119,12 +112,12 @@ func search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		key := keys[0]
-		log.Println("Url Param 'prefix' is: " + string(key))
+		keyPrefix := keys[0]
+		log.Println("Url Param 'prefix' is: " + string(keyPrefix))
 
-		for _, entity := range Entities {
-			if strings.HasPrefix(entity.Key, key) {
-				json.NewEncoder(w).Encode(entity)
+		for key, value := range Entities {
+			if strings.HasPrefix(key, keyPrefix) {
+				json.NewEncoder(w).Encode(key + " = " + value)
 				keyFound = true
 			}
 		}
@@ -137,12 +130,12 @@ func search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		key := keys[0]
-		log.Println("Url Param 'suffix' is: " + string(key))
+		keySuffix := keys[0]
+		log.Println("Url Param 'suffix' is: " + string(keySuffix))
 
-		for _, entity := range Entities {
-			if strings.HasSuffix(entity.Key, key) {
-				json.NewEncoder(w).Encode(entity)
+		for key, value := range Entities {
+			if strings.HasSuffix(key, keySuffix) {
+				json.NewEncoder(w).Encode(key + " = " + value)
 				keyFound = true
 			}
 		}
@@ -172,6 +165,7 @@ func handleRequests() {
 	myRouter.HandleFunc("/get/{key}", returnSingleEntityValue)
 	myRouter.Use(prometheusMiddleware)
 	myRouter.Path("/metrics").Handler(promhttp.Handler())
+	myRouter.HandleFunc("/healthz", healthz)
 	log.Fatal(http.ListenAndServe(":10000", myRouter))
 }
 
@@ -184,6 +178,10 @@ func prometheusMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		timer.ObserveDuration()
 	})
+}
+
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
 }
 
 func initMetrics() {
@@ -200,10 +198,9 @@ func initMetrics() {
 
 func main() {
 	// dummy data
-	Entities = []Entity{
-		Entity{Key: "abc-1", Value: "Thermodynamics"},
-		Entity{Key: "abc-2", Value: "Automotive Engineering"},
-	}
+	Entities["abc-1"] = "Thermodynamics"
+	Entities["abc-2"] = "Automotive Engineering"
+
 	initMetrics()
 	handleRequests()
 }

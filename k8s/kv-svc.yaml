@@ -24,6 +24,10 @@ spec:
         image: ameydev/kv-svc:v1
         ports:
         - containerPort: 10000
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10000
 ---
 apiVersion: v1
 kind: Service
