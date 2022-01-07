@@ -2,123 +2,121 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
-
-	"github.com/gorilla/mux"
-	"github.com/stretchr/testify/assert"
 )
 
-func Router() *mux.Router {
-	myRouter := mux.NewRouter().StrictSlash(true)
-	myRouter.HandleFunc("/search", search)
-	myRouter.HandleFunc("/getall", getall)
-	myRouter.HandleFunc("/set", createNewEntity).Methods("POST")
-	myRouter.HandleFunc("/get/{key}", returnSingleEntityValue)
-	// log.Fatal(http.ListenAndServe(":10000", myRouter))
-	return myRouter
+var a App
+
+func TestMain(m *testing.M) {
+	a.Initialize()
+	// a.Run()
+	code := m.Run()
+	os.Exit(code)
 }
 
-//quering for key "abc-1" which is not present.
+func executeRequest(req *http.Request) *httptest.ResponseRecorder {
+	rr := httptest.NewRecorder()
+	a.Router.ServeHTTP(rr, req)
+
+	return rr
+}
+
+func checkResponseCode(t *testing.T, expected, actual int) {
+	if expected != actual {
+		t.Errorf("Expected response code %d. Got %d\n", expected, actual)
+	}
+}
+
 func TestGetEntityBad(t *testing.T) {
-	request, _ := http.NewRequest("GET", "/get/abc-1", nil)
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 404, response.Code, "Expected 404 status code")
+	a.InitializeData()
+	req, _ := http.NewRequest("GET", "/get/xyz-1", nil)
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusNotFound, response.Code)
 }
 
 func TestGetEntityGood(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1", "value":"Some Random Value"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response1 := httptest.NewRecorder()
-	Router().ServeHTTP(response1, request)
-	request, _ = http.NewRequest("GET", "/get/abc-1", nil)
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 200, response.Code, "Expected 200 status code")
-}
-
-// POST request with invalid json body
-func TestSetEntityBad(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1","hello": "test"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 400, response.Code, "Expected 400 status code")
+	a.InitializeData()
+	req, _ := http.NewRequest("GET", "/get/abc-1", nil)
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusOK, response.Code)
+	var value string
+	json.Unmarshal(response.Body.Bytes(), &value)
+	if value != "Thermodynamics" {
+		t.Errorf(" Expecting an entity with key abc-1 and value Thermodynamics, Got '%s'", value)
+	}
 }
 
 func TestSetEntityGood(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1", "value":"Some Random Value"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 200, response.Code, "Expected 200 status code")
+	var jsonStr = []byte(`{"key":"test product", "value": "11.22"}`)
+	req, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusCreated, response.Code)
 }
 
-// searching with prefix
+func TestSetEntityBad(t *testing.T) {
+	var jsonStr = []byte(`{"key":"abc-1","hello": "test"}`)
+	req, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusBadRequest, response.Code)
+}
+
 func TestSearchPrefixGood(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1", "value":"Some Random Value"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	request, _ = http.NewRequest("GET", "/search?prefix=abc", nil)
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 200, response.Code, "Expected 200 status code")
+	req, _ := http.NewRequest("GET", "/search?prefix=abc-", nil)
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusOK, response.Code)
+}
+
+func TestSearchPrefixMultipleKeys(t *testing.T) {
+	req, _ := http.NewRequest("GET", "/search?prefix=abc", nil)
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusOK, response.Code)
+	var entities []Entity
+	json.Unmarshal(response.Body.Bytes(), &entities)
+	if len(entities) != 2 {
+		t.Errorf("Expected the 2 keys in the search response but'. Got '%d'", len(entities))
+	}
 }
 
 func TestSearchPrefixBad(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1", "value":"Some Random Value"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response1 := httptest.NewRecorder()
-	Router().ServeHTTP(response1, request)
-	request, _ = http.NewRequest("GET", "/search?prefix=xyz", nil)
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 404, response.Code, "Expected 404 status code")
+	req, _ := http.NewRequest("GET", "/search?prefix=xyz", nil)
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusNotFound, response.Code)
 }
 
 func TestSearchPrefixBadURL(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1", "value":"Some Random Value"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response1 := httptest.NewRecorder()
-	Router().ServeHTTP(response1, request)
-	request, _ = http.NewRequest("GET", "/search?prefi", nil)
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 400, response.Code, "Expected 400 status code")
+	req, _ := http.NewRequest("GET", "/search?prefi", nil)
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusBadRequest, response.Code)
 }
 
-// searching with suffix
+// // searching with suffix
 func TestSearchSuffixGood(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1", "value":"Some Random Value"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response1 := httptest.NewRecorder()
-	Router().ServeHTTP(response1, request)
-	request, _ = http.NewRequest("GET", "/search?suffix=-1", nil)
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 200, response.Code, "Expected 200 status code")
+	req, _ := http.NewRequest("GET", "/search?suffix=-1", nil)
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusOK, response.Code)
 }
 
 func TestSearchSuffixBad(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1", "value":"Some Random Value"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response1 := httptest.NewRecorder()
-	Router().ServeHTTP(response1, request)
-	request, _ = http.NewRequest("GET", "/search?suffix=-2", nil)
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 404, response.Code, "Expected 404 status code")
+	req, _ := http.NewRequest("GET", "/search?suffix=-3", nil)
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusNotFound, response.Code)
 }
 
 func TestSearchSuffixBadURL(t *testing.T) {
-	var jsonStr = []byte(`{"key":"abc-1", "value":"Some Random Value"}`)
-	request, _ := http.NewRequest("POST", "/set", bytes.NewBuffer(jsonStr))
-	response1 := httptest.NewRecorder()
-	Router().ServeHTTP(response1, request)
-	request, _ = http.NewRequest("GET", "/search?suffixx=-2", nil)
-	response := httptest.NewRecorder()
-	Router().ServeHTTP(response, request)
-	assert.Equal(t, 400, response.Code, "Expected 400 status code")
+	req, _ := http.NewRequest("GET", "/search?suffx=-3", nil)
+	req.Header.Set("Content-Type", "application/json")
+	response := executeRequest(req)
+	checkResponseCode(t, http.StatusBadRequest, response.Code)
 }

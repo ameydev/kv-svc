@@ -6,13 +6,14 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Entity - struct for all entities
@@ -22,7 +23,10 @@ type Entity struct {
 	Value string `json:"Value"`
 }
 
-var Entities = make(map[string]string)
+type App struct {
+	Router   *mux.Router
+	Entities map[string]string
+}
 
 var (
 	keyConter = promauto.NewCounter(prometheus.CounterOpts{
@@ -62,62 +66,55 @@ var (
 	}, []string{"path"})
 )
 
-func getall(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(Entities)
-}
-
-func returnSingleEntityValue(w http.ResponseWriter, r *http.Request) {
+func (a *App) returnSingleEntityValue(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	key := vars["key"]
 
-	if value, ok := Entities[key]; ok {
-		json.NewEncoder(w).Encode(value)
-		w.WriteHeader(http.StatusOK)
-		getCounter.WithLabelValues("200").Inc()
+	if value, ok := a.Entities[key]; ok {
+		respondWithJSON(w, http.StatusOK, value, "get")
+
 	} else {
-		log.Println("Get request: invalid key")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("404 - No data found!"))
-		getCounter.WithLabelValues("404").Inc()
+		respondWithError(w, http.StatusNotFound, "Data not found", "get")
 	}
 }
 
-func createNewEntity(w http.ResponseWriter, r *http.Request) {
+func (a *App) createNewEntity(w http.ResponseWriter, r *http.Request) {
 	reqBody, _ := ioutil.ReadAll(r.Body)
 	var entity Entity
 	json.Unmarshal(reqBody, &entity)
 	if entity.Key == "" || entity.Value == "" {
-		log.Println("Post request: Invalid request body")
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("400 - Bad request!"))
-		postCounter.WithLabelValues("400").Inc()
+		respondWithError(w, http.StatusBadRequest, "Post request: Invalid request body", "set")
 	} else {
-		Entities[entity.Key] = entity.Value
-		json.NewEncoder(w).Encode(entity)
-		w.WriteHeader(http.StatusAccepted)
-		keyConter.Inc()
-		postCounter.WithLabelValues("200").Inc()
+		a.Entities[entity.Key] = entity.Value
+		respondWithJSON(w, http.StatusCreated, entity, "set")
 	}
 
 }
 
-func search(w http.ResponseWriter, r *http.Request) {
+func (a *App) search(w http.ResponseWriter, r *http.Request) {
 	RawQuery := r.URL.RawQuery
 	var keyFound bool
+	var entity Entity
+	var entities []Entity
+
 	if strings.HasPrefix(RawQuery, "prefix=") {
 		keys, ok := r.URL.Query()["prefix"]
 		// search?prefix=<prefix>
 		if !ok || len(keys[0]) < 1 {
 			log.Println("Url Param 'prefix' is missing")
+			respondWithError(w, http.StatusBadRequest, "Bad URL request", "/search")
 			return
 		}
 
 		keyPrefix := keys[0]
 		log.Println("Url Param 'prefix' is: " + string(keyPrefix))
 
-		for key, value := range Entities {
+		for key, value := range a.Entities {
 			if strings.HasPrefix(key, keyPrefix) {
-				json.NewEncoder(w).Encode(key + " = " + value)
+				// json.NewEncoder(w).Encode(key + " = " + value)
+				entity.Key = key
+				entity.Value = value
+				entities = append(entities, entity)
 				keyFound = true
 			}
 		}
@@ -127,46 +124,32 @@ func search(w http.ResponseWriter, r *http.Request) {
 		// /search?suffix=<suffix>
 		if !ok || len(keys[0]) < 1 {
 			log.Println("Url Param 'suffix' is missing")
+			respondWithError(w, http.StatusBadRequest, "Bad URL request", "search")
 			return
 		}
 
 		keySuffix := keys[0]
 		log.Println("Url Param 'suffix' is: " + string(keySuffix))
 
-		for key, value := range Entities {
+		for key, value := range a.Entities {
 			if strings.HasSuffix(key, keySuffix) {
-				json.NewEncoder(w).Encode(key + " = " + value)
+				// json.NewEncoder(w).Encode(key + " = " + value)
+				entity.Key = key
+				entity.Value = value
+				entities = append(entities, entity)
 				keyFound = true
 			}
 		}
 
 	} else {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("400 - Bad Request!"))
-		log.Println("Invalid search parameters.")
-		searchCounter.WithLabelValues("400").Inc()
+		respondWithError(w, http.StatusBadRequest, "Bad URL request", "search")
 		return
 	}
 	if keyFound {
-		w.WriteHeader(http.StatusOK)
-		searchCounter.WithLabelValues("200").Inc()
+		respondWithJSON(w, http.StatusOK, entities, "search")
 	} else {
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("404 - No data found!"))
-		searchCounter.WithLabelValues("404").Inc()
+		respondWithError(w, http.StatusNotFound, "No data found!", "search")
 	}
-}
-
-func handleRequests() {
-	myRouter := mux.NewRouter().StrictSlash(true)
-	myRouter.HandleFunc("/search", search)
-	// myRouter.HandleFunc("/getall", getall)
-	myRouter.HandleFunc("/set", createNewEntity).Methods("POST")
-	myRouter.HandleFunc("/get/{key}", returnSingleEntityValue)
-	myRouter.Use(prometheusMiddleware)
-	myRouter.Path("/metrics").Handler(promhttp.Handler())
-	myRouter.HandleFunc("/healthz", healthz)
-	log.Fatal(http.ListenAndServe(":10000", myRouter))
 }
 
 // prometheusMiddleware implements mux.MiddlewareFunc.
@@ -184,23 +167,61 @@ func healthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func initMetrics() {
-	// Count the existing keys (dummy data)
-	for l, _ := range Entities {
-		log.Println("Recording existing data ", l)
+func respondWithError(w http.ResponseWriter, code int, message, endpoint string) {
+	getCounter.WithLabelValues(strconv.Itoa(code)).Inc()
+	respondWithJSON(w, code, map[string]string{"error": message}, endpoint)
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}, endpoint string) {
+	response, _ := json.Marshal(payload)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(response)
+	switch endpoint {
+	case "get":
+		getCounter.WithLabelValues(strconv.Itoa(code)).Inc()
+	case "set":
+		postCounter.WithLabelValues(strconv.Itoa(code)).Inc()
+	case "search":
+		searchCounter.WithLabelValues(strconv.Itoa(code)).Inc()
+	}
+}
+
+func (a *App) InitializeData() {
+	a.Entities = make(map[string]string)
+	a.Entities["abc-1"] = "Thermodynamics"
+	a.Entities["abc-2"] = "Automotive Engineering"
+}
+
+func (a *App) Initialize() {
+	// dummy data
+	a.InitializeData()
+	for i := 0; i < len(a.Entities); i++ {
+		log.Println("Recording existing data ", i)
 		keyConter.Inc()
 	}
-
+	// Initialize prometheus metrics
 	prometheus.MustRegister(getCounter)
 	prometheus.MustRegister(postCounter)
 	prometheus.MustRegister(searchCounter)
+
+	a.Router = mux.NewRouter()
+
+	a.Router.HandleFunc("/search", a.search)
+	a.Router.HandleFunc("/set", a.createNewEntity).Methods("POST")
+	a.Router.HandleFunc("/get/{key}", a.returnSingleEntityValue)
+	a.Router.Use(prometheusMiddleware)
+	a.Router.Path("/metrics").Handler(promhttp.Handler())
+	a.Router.HandleFunc("/healthz", healthz)
+
+}
+
+func (a *App) Run(addr string) {
+	log.Fatal(http.ListenAndServe(addr, a.Router))
 }
 
 func main() {
-	// dummy data
-	Entities["abc-1"] = "Thermodynamics"
-	Entities["abc-2"] = "Automotive Engineering"
-
-	initMetrics()
-	handleRequests()
+	a := App{}
+	a.Initialize()
+	a.Run(":10000")
 }
