@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +24,8 @@ type Entity struct {
 	Key   string `json:"Key"`
 	Value string `json:"Value"`
 }
+
+var mutex = &sync.RWMutex{}
 
 type App struct {
 	Router   *mux.Router
@@ -68,12 +72,11 @@ var (
 
 func (a *App) returnSingleEntityValue(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	key := vars["key"]
-
-	if value, ok := a.Entities[key]; ok {
+	keyName := vars["key"]
+	if value, ok := a.Entities[keyName]; ok {
 		respondWithJSON(w, http.StatusOK, value, "get")
-
 	} else {
+		w.WriteHeader(http.StatusNotFound)
 		respondWithError(w, http.StatusNotFound, "Data not found", "get")
 	}
 }
@@ -83,12 +86,21 @@ func (a *App) createNewEntity(w http.ResponseWriter, r *http.Request) {
 	var entity Entity
 	json.Unmarshal(reqBody, &entity)
 	if entity.Key == "" || entity.Value == "" {
+		w.WriteHeader(http.StatusBadRequest)
 		respondWithError(w, http.StatusBadRequest, "Post request: Invalid request body", "set")
 	} else {
-		a.Entities[entity.Key] = entity.Value
-		respondWithJSON(w, http.StatusCreated, entity, "set")
+		w.WriteHeader(http.StatusCreated)
+		go a.writeToMap(entity, w)
+		time.Sleep(1 * time.Millisecond)
 	}
 
+}
+
+func (a *App) writeToMap(entity Entity, w http.ResponseWriter) {
+	mutex.Lock()
+	a.Entities[entity.Key] = entity.Value
+	mutex.Unlock()
+	respondWithJSON(w, http.StatusCreated, entity, "set")
 }
 
 func (a *App) search(w http.ResponseWriter, r *http.Request) {
@@ -102,12 +114,12 @@ func (a *App) search(w http.ResponseWriter, r *http.Request) {
 		// search?prefix=<prefix>
 		if !ok || len(keys[0]) < 1 {
 			log.Println("Url Param 'prefix' is missing")
+			w.WriteHeader(http.StatusBadRequest)
 			respondWithError(w, http.StatusBadRequest, "Bad URL request", "/search")
 			return
 		}
 
 		keyPrefix := keys[0]
-		log.Println("Url Param 'prefix' is: " + string(keyPrefix))
 
 		for key, value := range a.Entities {
 			if strings.HasPrefix(key, keyPrefix) {
@@ -124,12 +136,12 @@ func (a *App) search(w http.ResponseWriter, r *http.Request) {
 		// /search?suffix=<suffix>
 		if !ok || len(keys[0]) < 1 {
 			log.Println("Url Param 'suffix' is missing")
+			w.WriteHeader(http.StatusBadRequest)
 			respondWithError(w, http.StatusBadRequest, "Bad URL request", "search")
 			return
 		}
 
 		keySuffix := keys[0]
-		log.Println("Url Param 'suffix' is: " + string(keySuffix))
 
 		for key, value := range a.Entities {
 			if strings.HasSuffix(key, keySuffix) {
@@ -142,12 +154,15 @@ func (a *App) search(w http.ResponseWriter, r *http.Request) {
 		}
 
 	} else {
+		w.WriteHeader(http.StatusBadRequest)
 		respondWithError(w, http.StatusBadRequest, "Bad URL request", "search")
 		return
 	}
 	if keyFound {
+		w.WriteHeader(http.StatusOK)
 		respondWithJSON(w, http.StatusOK, entities, "search")
 	} else {
+		w.WriteHeader(http.StatusNotFound)
 		respondWithError(w, http.StatusNotFound, "No data found!", "search")
 	}
 }
@@ -175,7 +190,6 @@ func respondWithError(w http.ResponseWriter, code int, message, endpoint string)
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}, endpoint string) {
 	response, _ := json.Marshal(payload)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
 	w.Write(response)
 	switch endpoint {
 	case "get":
@@ -206,7 +220,6 @@ func (a *App) Initialize() {
 	prometheus.MustRegister(searchCounter)
 
 	a.Router = mux.NewRouter()
-
 	a.Router.HandleFunc("/search", a.search)
 	a.Router.HandleFunc("/set", a.createNewEntity).Methods("POST")
 	a.Router.HandleFunc("/get/{key}", a.returnSingleEntityValue)
@@ -217,7 +230,13 @@ func (a *App) Initialize() {
 }
 
 func (a *App) Run(addr string) {
-	log.Fatal(http.ListenAndServe(addr, a.Router))
+	srv := &http.Server{
+		Handler:      a.Router,
+		Addr:         addr,
+		WriteTimeout: 2 * time.Second,
+		ReadTimeout:  2 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 func main() {
